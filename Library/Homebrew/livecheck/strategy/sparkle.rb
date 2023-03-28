@@ -66,25 +66,8 @@ module Homebrew
         # @return [Item, nil]
         sig { params(content: String).returns(T::Array[Item]) }
         def self.items_from_content(content)
-          require "rexml/document"
-
-          parsing_tries = 0
-          xml = begin
-            REXML::Document.new(content)
-          rescue REXML::UndefinedNamespaceException => e
-            undefined_prefix = e.to_s[/Undefined prefix ([^ ]+) found/i, 1]
-            raise if undefined_prefix.blank?
-
-            # Only retry parsing once after removing prefix from content
-            parsing_tries += 1
-            raise if parsing_tries > 1
-
-            # When an XML document contains a prefix without a corresponding
-            # namespace, it's necessary to remove the prefix from the content
-            # to be able to successfully parse it using REXML
-            content = content.gsub(%r{(</?| )#{Regexp.escape(undefined_prefix)}:}, '\1')
-            retry
-          end
+          xml = Xml.parse_xml(content)
+          return [] if xml.blank?
 
           # Remove prefixes, so we can reliably identify elements and attributes
           xml.root&.each_recursive do |node|
@@ -124,7 +107,7 @@ module Homebrew
 
             bundle_version = BundleVersion.new(short_version, version) if short_version || version
 
-            next if os && os != "osx"
+            next if os && !((os == "osx") || (os == "macos"))
 
             if (minimum_system_version = item.elements["minimumSystemVersion"]&.text&.gsub(/\A\D+|\D+\z/, ""))
               macos_minimum_system_version = begin
@@ -174,7 +157,7 @@ module Homebrew
 
           if block
             block_return_value = case block.parameters[0]
-            when [:opt, :item], [:rest]
+            when [:opt, :item], [:rest], [:req]
               regex.present? ? yield(item, regex) : yield(item)
             when [:opt, :items]
               regex.present? ? yield(items, regex) : yield(items)
@@ -203,7 +186,8 @@ module Homebrew
         }
         def self.find_versions(url:, regex: nil, **_unused, &block)
           if regex.present? && block.blank?
-            raise ArgumentError, "#{T.must(name).demodulize} only supports a regex when using a `strategy` block"
+            raise ArgumentError,
+                  "#{Utils.demodulize(T.must(name))} only supports a regex when using a `strategy` block"
           end
 
           match_data = { matches: {}, regex: regex, url: url }

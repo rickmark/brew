@@ -1,12 +1,17 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
+# `HOMEBREW_STACKPROF` should be set via `brew prof --stackprof`, not manually.
 if ENV["HOMEBREW_STACKPROF"]
+  require "rubygems"
   require "stackprof"
   StackProf.start(mode: :wall, raw: true)
 end
 
 raise "HOMEBREW_BREW_FILE was not exported! Please call bin/brew directly!" unless ENV["HOMEBREW_BREW_FILE"]
+if $PROGRAM_NAME != __FILE__ && !$PROGRAM_NAME.end_with?("/bin/ruby-prof")
+  raise "#{__FILE__} must not be loaded via `require`."
+end
 
 std_trap = trap("INT") { exit! 130 } # no backtrace thanks
 
@@ -31,8 +36,8 @@ begin
   empty_argv = ARGV.empty?
   help_flag_list = %w[-h --help --usage -?]
   help_flag = !ENV["HOMEBREW_HELP"].nil?
-  help_cmd_index = nil
-  cmd = nil
+  help_cmd_index = T.let(nil, T.nilable(Integer))
+  cmd = T.let(nil, T.nilable(String))
 
   ARGV.each_with_index do |arg, i|
     break if help_flag && cmd
@@ -60,7 +65,7 @@ begin
   path.prepend(HOMEBREW_SHIMS_PATH/"shared")
   homebrew_path.prepend(HOMEBREW_SHIMS_PATH/"shared")
 
-  ENV["PATH"] = path
+  ENV["PATH"] = path.to_s
 
   require "commands"
   require "settings"
@@ -72,7 +77,7 @@ begin
     homebrew_path.append(Tap.cmd_directories)
 
     # External commands expect a normal PATH
-    ENV["PATH"] = homebrew_path
+    ENV["PATH"] = homebrew_path.to_s
   end
 
   # Usage instructions should be displayed if and only if one of:
@@ -86,10 +91,6 @@ begin
   end
 
   if internal_cmd || Commands.external_ruby_v2_cmd_path(cmd)
-    if Commands::INSTALL_FROM_API_FORBIDDEN_COMMANDS.include?(cmd) && Homebrew::EnvConfig.install_from_api?
-      odie "This command cannot be run while HOMEBREW_INSTALL_FROM_API is set!"
-    end
-
     Homebrew.send Commands.method_name(cmd)
   elsif (path = Commands.external_ruby_cmd_path(cmd))
     require?(path)
@@ -120,10 +121,12 @@ begin
     # Unset HOMEBREW_HELP to avoid confusing the tap
     with_env HOMEBREW_HELP: nil do
       tap_commands = []
-      cgroup = Utils.popen_read("cat", "/proc/1/cgroup")
-      if %w[azpl_job actions_job docker garden kubepods].none? { |container| cgroup.include?(container) }
-        brew_uid = HOMEBREW_BREW_FILE.stat.uid
-        tap_commands += %W[/usr/bin/sudo -u ##{brew_uid}] if Process.uid.zero? && !brew_uid.zero?
+      if (File.exist?("/.dockerenv") ||
+         Homebrew.running_as_root? ||
+         ((cgroup = Utils.popen_read("cat", "/proc/1/cgroup").presence) &&
+          %w[azpl_job actions_job docker garden kubepods].none? { |type| cgroup.include?(type) })) &&
+         Homebrew.running_as_root_but_not_owned_by_root?
+        tap_commands += %W[/usr/bin/sudo -u ##{Homebrew.owner_uid}]
       end
       quiet_arg = args.quiet? ? "--quiet" : nil
       tap_commands += [HOMEBREW_BREW_FILE, "tap", *quiet_arg, possible_tap.name]
@@ -148,9 +151,22 @@ rescue BuildError => e
   e.dump(verbose: args.verbose?)
 
   if e.formula.head? || e.formula.deprecated? || e.formula.disabled?
+    reason = if e.formula.head?
+      "was built from an unstable upstream --HEAD"
+    elsif e.formula.deprecated?
+      "is deprecated"
+    elsif e.formula.disabled?
+      "is disabled"
+    end
     $stderr.puts <<~EOS
-      Please create pull requests instead of asking for help on Homebrew's GitHub,
-      Twitter or any other official channels.
+      #{e.formula.name}'s formula #{reason}.
+      This build failure is expected behaviour.
+      Do not create issues about this on Homebrew's GitHub repositories.
+      Any opened issues will be immediately closed without response.
+      Do not ask for help from Homebrew or its maintainers on social media.
+      You may ask for help in Homebrew's discussions but are unlikely to receive a response.
+      Try to figure out the problem yourself and submit a fix as a pull request.
+      We will review it but may or may not accept it.
     EOS
   end
 
@@ -165,14 +181,14 @@ rescue RuntimeError, SystemCallError => e
 rescue MethodDeprecatedError => e
   onoe e
   if e.issues_url
-    $stderr.puts "If reporting this issue please do so at (not Homebrew/brew or Homebrew/core):"
+    $stderr.puts "If reporting this issue please do so at (not Homebrew/brew or Homebrew/homebrew-core):"
     $stderr.puts "  #{Formatter.url(e.issues_url)}"
   end
   $stderr.puts e.backtrace if args.debug?
   exit 1
 rescue Exception => e # rubocop:disable Lint/RescueException
   onoe e
-  if internal_cmd && defined?(OS::ISSUES_URL)
+  if internal_cmd && !OS.unsupported_configuration?
     if Homebrew::EnvConfig.no_auto_update?
       $stderr.puts "#{Tty.bold}Do not report this issue until you've run `brew update` and tried again.#{Tty.reset}"
     else

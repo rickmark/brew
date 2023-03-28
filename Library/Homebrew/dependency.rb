@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "dependable"
@@ -13,7 +13,7 @@ class Dependency
   include Dependable
   extend Cachable
 
-  attr_reader :name, :tags, :env_proc, :option_names
+  attr_reader :name, :env_proc, :option_names
 
   DEFAULT_ENV_PROC = proc {}.freeze
   private_constant :DEFAULT_ENV_PROC

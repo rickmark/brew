@@ -8,8 +8,6 @@ module UnpackStrategy
 
     include UnpackStrategy
 
-    using Magic
-
     sig { returns(T::Array[String]) }
     def self.extensions
       [".zip"]
@@ -49,4 +47,4 @@ module UnpackStrategy
   end
 end
 
-require "extend/os/mac/unpack_strategy/zip" if OS.mac?
+require "extend/os/unpack_strategy/zip"

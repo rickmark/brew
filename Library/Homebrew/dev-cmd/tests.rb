@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "cli/parser"
@@ -19,8 +19,6 @@ module Homebrew
              description: "Generate code coverage reports."
       switch "--generic",
              description: "Run only OS-agnostic tests."
-      switch "--no-compat",
-             description: "Do not load the compatibility layer when running tests."
       switch "--online",
              description: "Include tests that use the GitHub API and tests that use any of the taps for " \
                           "official external commands."
@@ -62,10 +60,13 @@ module Homebrew
 
     ohai "Sending test results to BuildPulse"
 
-    safe_system Formula["buildpulse-test-reporter"].opt_bin/"buildpulse-test-reporter",
-                "submit", "#{HOMEBREW_LIBRARY_PATH}/test/junit",
-                "--account-id", ENV.fetch("HOMEBREW_BUILDPULSE_ACCOUNT_ID"),
-                "--repository-id", ENV.fetch("HOMEBREW_BUILDPULSE_REPOSITORY_ID")
+    # TODO: make this use `system_command!` when https://github.com/buildpulse/buildpulse-action/issues/4 is fixed
+    system_command Formula["buildpulse-test-reporter"].opt_bin/"buildpulse-test-reporter",
+                   args: [
+                     "submit", "#{HOMEBREW_LIBRARY_PATH}/test/junit",
+                     "--account-id", ENV.fetch("HOMEBREW_BUILDPULSE_ACCOUNT_ID"),
+                     "--repository-id", ENV.fetch("HOMEBREW_BUILDPULSE_REPOSITORY_ID")
+                   ]
   end
 
   def changed_test_files
@@ -93,46 +94,7 @@ module Homebrew
     require "byebug" if args.byebug?
 
     HOMEBREW_LIBRARY_PATH.cd do
-      # Cleanup any unwanted user configuration.
-      allowed_test_env = %w[
-        HOMEBREW_GITHUB_API_TOKEN
-        HOMEBREW_CACHE
-        HOMEBREW_LOGS
-        HOMEBREW_TEMP
-      ]
-      Homebrew::EnvConfig::ENVS.keys.map(&:to_s).each do |env|
-        next if allowed_test_env.include?(env)
-
-        ENV.delete(env)
-      end
-
-      ENV["HOMEBREW_NO_ANALYTICS_THIS_RUN"] = "1"
-      ENV["HOMEBREW_NO_COMPAT"] = "1" if args.no_compat?
-      ENV["HOMEBREW_TEST_GENERIC_OS"] = "1" if args.generic?
-      ENV["HOMEBREW_TEST_ONLINE"] = "1" if args.online?
-      ENV["HOMEBREW_SORBET_RUNTIME"] = "1"
-
-      ENV["USER"] ||= system_command!("id", args: ["-nu"]).stdout.chomp
-
-      # Avoid local configuration messing with tests, e.g. git being configured
-      # to use GPG to sign by default
-      ENV["HOME"] = "#{HOMEBREW_LIBRARY_PATH}/test"
-
-      # Print verbose output when requesting debug or verbose output.
-      ENV["HOMEBREW_VERBOSE_TESTS"] = "1" if args.debug? || args.verbose?
-
-      if args.coverage?
-        ENV["HOMEBREW_TESTS_COVERAGE"] = "1"
-        FileUtils.rm_f "test/coverage/.resultset.json"
-      end
-
-      # Override author/committer as global settings might be invalid and thus
-      # will cause silent failure during the setup of dummy Git repositories.
-      %w[AUTHOR COMMITTER].each do |role|
-        ENV["GIT_#{role}_NAME"] = "brew tests"
-        ENV["GIT_#{role}_EMAIL"] = "brew-tests@localhost"
-        ENV["GIT_#{role}_DATE"]  = "Sun Jan 22 19:59:13 2017 +0000"
-      end
+      setup_environment!(args)
 
       parallel = true
 
@@ -152,7 +114,7 @@ module Homebrew
       end
 
       if files.blank?
-        raise UsageError, "The --only= argument requires a valid file or folder name!" if args.only
+        raise UsageError, "The `--only` argument requires a valid file or folder name!" if args.only
 
         if args.changed?
           opoo "No tests are directly associated with the changed files!"
@@ -161,7 +123,6 @@ module Homebrew
       end
 
       parallel_rspec_log_name = "parallel_runtime_rspec"
-      parallel_rspec_log_name = "#{parallel_rspec_log_name}.no_compat" if args.no_compat?
       parallel_rspec_log_name = "#{parallel_rspec_log_name}.generic" if args.generic?
       parallel_rspec_log_name = "#{parallel_rspec_log_name}.online" if args.online?
       parallel_rspec_log_name = "#{parallel_rspec_log_name}.log"
@@ -196,6 +157,8 @@ module Homebrew
         --require spec_helper
       ]
 
+      # TODO: Refactor and move to extend/os
+      # rubocop:disable Homebrew/MoveToExtendOS
       unless OS.mac?
         bundle_args << "--tag" << "~needs_macos" << "--tag" << "~cask"
         files = files.grep_v(%r{^test/(os/mac|cask)(/.*|_spec\.rb)$})
@@ -205,14 +168,15 @@ module Homebrew
         bundle_args << "--tag" << "~needs_linux"
         files = files.grep_v(%r{^test/os/linux(/.*|_spec\.rb)$})
       end
+      # rubocop:enable Homebrew/MoveToExtendOS
+
+      bundle_args << "--tag" << "~needs_network" unless args.online?
+      unless ENV["CI"]
+        bundle_args << "--tag" << "~needs_ci" \
+                    << "--tag" << "~needs_svn"
+      end
 
       puts "Randomized with seed #{seed}"
-
-      # Let tests find `bundle` in the actual location.
-      ENV["HOMEBREW_TESTS_GEM_USER_DIR"] = gem_user_dir
-
-      # Let `bundle` in PATH find its gem.
-      ENV["GEM_PATH"] = "#{ENV.fetch("GEM_PATH")}:#{gem_user_dir}"
 
       # Submit test flakiness information using BuildPulse
       # BUILDPULSE used in spec_helper.rb
@@ -226,12 +190,70 @@ module Homebrew
       else
         system "bundle", "exec", "rspec", *bundle_args, "--", *files
       end
+      success = $CHILD_STATUS.success?
 
       run_buildpulse if use_buildpulse?
 
-      return if $CHILD_STATUS.success?
+      return if success
 
       Homebrew.failed = true
+    end
+  end
+
+  def setup_environment!(args)
+    # Cleanup any unwanted user configuration.
+    allowed_test_env = %w[
+      HOMEBREW_GITHUB_API_TOKEN
+      HOMEBREW_CACHE
+      HOMEBREW_LOGS
+      HOMEBREW_TEMP
+      HOMEBREW_USE_RUBY_FROM_PATH
+    ]
+    Homebrew::EnvConfig::ENVS.keys.map(&:to_s).each do |env|
+      next if allowed_test_env.include?(env)
+
+      ENV.delete(env)
+    end
+
+    # Codespaces HOMEBREW_PREFIX and /tmp are mounted 755 which makes Ruby warn constantly.
+    if (ENV["HOMEBREW_CODESPACES"] == "true") && (HOMEBREW_TEMP.to_s == "/tmp")
+      # Need to keep this fairly short to avoid socket paths being too long in tests.
+      homebrew_prefix_tmp = "/home/linuxbrew/tmp"
+      ENV["HOMEBREW_TEMP"] = homebrew_prefix_tmp
+      FileUtils.mkdir_p homebrew_prefix_tmp
+      system "chmod", "-R", "g-w,o-w", HOMEBREW_PREFIX, homebrew_prefix_tmp
+    end
+
+    ENV["HOMEBREW_TESTS"] = "1"
+    ENV["HOMEBREW_NO_AUTO_UPDATE"] = "1"
+    ENV["HOMEBREW_NO_ANALYTICS_THIS_RUN"] = "1"
+    ENV["HOMEBREW_TEST_GENERIC_OS"] = "1" if args.generic?
+    ENV["HOMEBREW_TEST_ONLINE"] = "1" if args.online?
+    ENV["HOMEBREW_SORBET_RUNTIME"] = "1"
+
+    # TODO: remove this and fix tests when possible.
+    ENV["HOMEBREW_NO_INSTALL_FROM_API"] = "1"
+
+    ENV["USER"] ||= system_command!("id", args: ["-nu"]).stdout.chomp
+
+    # Avoid local configuration messing with tests, e.g. git being configured
+    # to use GPG to sign by default
+    ENV["HOME"] = "#{HOMEBREW_LIBRARY_PATH}/test"
+
+    # Print verbose output when requesting debug or verbose output.
+    ENV["HOMEBREW_VERBOSE_TESTS"] = "1" if args.debug? || args.verbose?
+
+    if args.coverage?
+      ENV["HOMEBREW_TESTS_COVERAGE"] = "1"
+      FileUtils.rm_f "test/coverage/.resultset.json"
+    end
+
+    # Override author/committer as global settings might be invalid and thus
+    # will cause silent failure during the setup of dummy Git repositories.
+    %w[AUTHOR COMMITTER].each do |role|
+      ENV["GIT_#{role}_NAME"] = "brew tests"
+      ENV["GIT_#{role}_EMAIL"] = "brew-tests@localhost"
+      ENV["GIT_#{role}_DATE"]  = "Sun Jan 22 19:59:13 2017 +0000"
     end
   end
 end

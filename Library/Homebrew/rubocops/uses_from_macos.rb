@@ -1,7 +1,7 @@
 # typed: true
 # frozen_string_literal: true
 
-require "rubocops/extend/formula"
+require "rubocops/extend/formula_cop"
 
 module RuboCop
   module Cop
@@ -61,6 +61,8 @@ module RuboCop
         ].freeze
 
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           find_method_with_args(body_node, :keg_only, :provided_by_macos) do
             return if PROVIDED_BY_MACOS_FORMULAE.include? @formula_name
 
@@ -83,6 +85,7 @@ module RuboCop
           groff
           gzip
           less
+          mandoc
           openssl
           perl
           php
@@ -94,6 +97,8 @@ module RuboCop
         ].freeze
 
         def audit_formula(_node, _class_node, _parent_class_node, body_node)
+          return if body_node.nil?
+
           find_method_with_args(body_node, :uses_from_macos, /^"(.+)"/).each do |method|
             dep = if parameters(method).first.instance_of?(RuboCop::AST::StrNode)
               parameters(method).first

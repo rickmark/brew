@@ -32,6 +32,7 @@ deps
 desc
 developer
 dispatch-build-bottle
+docs
 doctor
 dr
 edit
@@ -40,6 +41,8 @@ extract
 fetch
 formula
 formulae
+generate-cask-api
+generate-formula-api
 generate-man-completions
 gist-logs
 help
@@ -60,15 +63,18 @@ log
 ls
 migrate
 missing
+nodenv-sync
 options
 outdated
 pin
+postgresql-upgrade-database
 postinstall
 pr-automerge
 pr-publish
 pr-pull
 pr-upload
 prof
+rbenv-sync
 readall
 reinstall
 release
@@ -79,7 +85,6 @@ ruby
 search
 sh
 shellenv
-sponsors
 style
 tap
 tap-info
@@ -100,6 +105,7 @@ update-license-data
 update-maintainers
 update-python-resources
 update-reset
+update-sponsors
 update-test
 upgrade
 uses

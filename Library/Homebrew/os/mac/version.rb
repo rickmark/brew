@@ -13,21 +13,6 @@ module OS
     class Version < ::Version
       extend T::Sig
 
-      # TODO: bump version when new macOS is released or announced
-      # and also update references in docs/Installation.md,
-      # https://github.com/Homebrew/install/blob/HEAD/install.sh and
-      # MacOSVersions::SYMBOLS
-      NEWEST_UNSUPPORTED = "13"
-      private_constant :NEWEST_UNSUPPORTED
-
-      # TODO: bump version when new macOS is released and also update
-      # references in docs/Installation.md and
-      # https://github.com/Homebrew/install/blob/HEAD/install.sh
-      OLDEST_SUPPORTED = "10.15"
-      private_constant :OLDEST_SUPPORTED
-
-      OLDEST_ALLOWED = "10.11"
-
       sig { params(version: Symbol).returns(T.attached_class) }
       def self.from_symbol(version)
         str = MacOSVersions::SYMBOLS.fetch(version) { raise MacOSVersionError, version }
@@ -60,7 +45,7 @@ module OS
       sig { returns(T.self_type) }
       def strip_patch
         # Big Sur is 11.x but Catalina is 10.15.x.
-        if major >= 11
+        if T.must(major) >= 11
           self.class.new(major.to_s)
         else
           major_minor
@@ -79,12 +64,12 @@ module OS
 
       sig { returns(T::Boolean) }
       def outdated_release?
-        self < OLDEST_SUPPORTED
+        self < HOMEBREW_MACOS_OLDEST_SUPPORTED
       end
 
       sig { returns(T::Boolean) }
       def prerelease?
-        self >= NEWEST_UNSUPPORTED
+        self >= HOMEBREW_MACOS_NEWEST_UNSUPPORTED
       end
 
       # For {OS::Mac::Version} compatibility.

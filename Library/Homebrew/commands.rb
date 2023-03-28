@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "completions"
@@ -11,6 +11,8 @@ module Commands
 
   HOMEBREW_CMD_PATH = (HOMEBREW_LIBRARY_PATH/"cmd").freeze
   HOMEBREW_DEV_CMD_PATH = (HOMEBREW_LIBRARY_PATH/"dev-cmd").freeze
+  # If you are going to change anything in below hash,
+  # be sure to also update appropriate case statement in brew.sh
   HOMEBREW_INTERNAL_COMMAND_ALIASES = {
     "ls"          => "list",
     "homepage"    => "home",
@@ -30,25 +32,6 @@ module Commands
     "lc"          => "livecheck",
     "tc"          => "typecheck",
   }.freeze
-
-  INSTALL_FROM_API_FORBIDDEN_COMMANDS = %w[
-    audit
-    bottle
-    bump-cask-pr
-    bump-formula-pr
-    bump-revision
-    bump-unversioned-casks
-    cat
-    create
-    edit
-    extract
-    formula
-    livecheck
-    pr-pull
-    pr-upload
-    test
-    update-python-resources
-  ].freeze
 
   def valid_internal_cmd?(cmd)
     require?(HOMEBREW_CMD_PATH/cmd)
@@ -207,9 +190,8 @@ module Commands
 
       # skip the comment's initial usage summary lines
       comment_lines.slice(2..-1).each do |line|
-        if / (?<option>-[-\w]+) +(?<desc>.*)$/ =~ line
-          options << [option, desc]
-        end
+        match_data = / (?<option>-[-\w]+) +(?<desc>.*)$/.match(line)
+        options << [match_data[:option], match_data[:desc]] if match_data
       end
       options
     end
@@ -230,8 +212,10 @@ module Commands
 
       # skip the comment's initial usage summary lines
       comment_lines.slice(2..-1)&.each do |line|
-        if /^#:  (?<desc>\w.*+)$/ =~ line
-          return desc.split(".").first if short
+        match_data = /^#:  (?<desc>\w.*+)$/.match(line)
+        if match_data
+          desc = match_data[:desc]
+          return T.must(desc).split(".").first if short
 
           return desc
         end

@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "os/mac/version"
@@ -38,7 +38,7 @@ module OS
       end
     end
 
-    sig { params(version: Version).void }
+    sig { params(version: String).void }
     def full_version=(version)
       @full_version = Version.new(version.chomp)
       @version = nil
@@ -48,7 +48,7 @@ module OS
     def latest_sdk_version
       # TODO: bump version when new Xcode macOS SDK is released
       # NOTE: We only track the major version of the SDK.
-      ::Version.new("12")
+      ::Version.new("13")
     end
     private :latest_sdk_version
 
@@ -113,31 +113,31 @@ module OS
       end
     end
 
-    def sdk(v = nil)
-      sdk_locator.sdk_if_applicable(v)
+    def sdk(version = nil)
+      sdk_locator.sdk_if_applicable(version)
     end
 
-    def sdk_for_formula(f, v = nil, check_only_runtime_requirements: false)
+    def sdk_for_formula(formula, version = nil, check_only_runtime_requirements: false)
       # If the formula requires Xcode, don't return the CLT SDK
       # If check_only_runtime_requirements is true, don't necessarily return the
       # Xcode SDK if the XcodeRequirement is only a build or test requirement.
-      return Xcode.sdk if f.requirements.any? do |req|
+      return Xcode.sdk if formula.requirements.any? do |req|
         next false unless req.is_a? XcodeRequirement
         next false if check_only_runtime_requirements && req.build? && !req.test?
 
         true
       end
 
-      sdk(v)
+      sdk(version)
     end
 
     # Returns the path to an SDK or nil, following the rules set by {sdk}.
-    def sdk_path(v = nil)
-      s = sdk(v)
+    def sdk_path(version = nil)
+      s = sdk(version)
       s&.path
     end
 
-    def sdk_path_if_needed(v = nil)
+    def sdk_path_if_needed(version = nil)
       # Prefer CLT SDK when both Xcode and the CLT are installed.
       # Expected results:
       # 1. On Xcode-only systems, return the Xcode SDK.
@@ -148,7 +148,7 @@ module OS
 
       return unless sdk_root_needed?
 
-      sdk_path(v)
+      sdk_path(version)
     end
 
     # See these issues for some history:

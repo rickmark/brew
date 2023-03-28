@@ -32,8 +32,18 @@ module Homebrew
     end
 
     sig { returns(T::Array[Cask::Artifact::Qlplugin]) }
+    def keyboard_layouts
+      @keyboard_layouts ||= @cask.artifacts.select { |a| a.is_a?(Cask::Artifact::KeyboardLayout) }
+    end
+
+    sig { returns(T::Array[Cask::Artifact::Qlplugin]) }
     def qlplugins
       @qlplugins ||= @cask.artifacts.select { |a| a.is_a?(Cask::Artifact::Qlplugin) }
+    end
+
+    sig { returns(T::Array[Cask::Artifact::Installer]) }
+    def installers
+      @installers ||= @cask.artifacts.select { |a| a.is_a?(Cask::Artifact::Installer) }
     end
 
     sig { returns(T::Array[Cask::Artifact::Pkg]) }
@@ -88,15 +98,15 @@ module Homebrew
 
         installer.extract_primary_container(to: dir)
 
-        info_plist_paths = apps.concat(qlplugins).flat_map do |artifact|
-          top_level_info_plists(Pathname.glob(dir/"**"/artifact.source.basename/"Contents"/"Info.plist")).sort
+        info_plist_paths = apps.concat(keyboard_layouts, qlplugins, installers).flat_map do |artifact|
+          source = artifact.is_a?(Cask::Artifact::Installer) ? artifact.path : artifact.source.basename
+          top_level_info_plists(Pathname.glob(dir/"**"/source/"Contents"/"Info.plist")).sort
         end
 
         info_plist_paths.each(&parse_info_plist)
 
-        pkg_paths = pkgs.flat_map do |pkg|
-          Pathname.glob(dir/"**"/pkg.path.basename).sort
-        end
+        pkg_paths = pkgs.flat_map { |pkg| Pathname.glob(dir/"**"/pkg.path.basename).sort }
+        pkg_paths = Pathname.glob(dir/"**"/"*.pkg").sort if pkg_paths.empty?
 
         pkg_paths.each do |pkg_path|
           Dir.mktmpdir do |extract_dir|

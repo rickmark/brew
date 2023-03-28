@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "json"
@@ -12,6 +12,7 @@ require "mechanize/version"
 require "mechanize/http/content_disposition_parser"
 
 require "utils/curl"
+require "utils/github"
 
 require "github_packages"
 
@@ -94,25 +95,25 @@ class AbstractDownloadStrategy
   # @api public
   def stage(&block)
     UnpackStrategy.detect(cached_location,
-                          prioritise_extension: true,
+                          prioritize_extension: true,
                           ref_type: @ref_type, ref: @ref)
                   .extract_nestedly(basename:             basename,
-                                    prioritise_extension: true,
+                                    prioritize_extension: true,
                                     verbose:              verbose? && !quiet?)
     chdir(&block) if block
   end
 
   def chdir(&block)
     entries = Dir["*"]
-    raise "Empty archive" if entries.length.zero?
+    raise "Empty archive" if entries.empty?
 
     if entries.length != 1
       yield
       return
     end
 
-    if File.directory? entries.first
-      Dir.chdir(entries.first, &block)
+    if File.directory? entries.fetch(0)
+      Dir.chdir(entries.fetch(0), &block)
     else
       yield
     end
@@ -470,8 +471,7 @@ class CurlDownloadStrategy < AbstractFileDownloadStrategy
 
     lines = output.to_s.lines.map(&:chomp)
 
-    final_url = curl_response_last_location(parsed_output[:responses], absolutize: true, base_url: url)
-    final_url ||= url
+    final_url = curl_response_follow_redirections(parsed_output[:responses], url)
 
     content_disposition_parser = Mechanize::HTTP::ContentDispositionParser.new
 
@@ -482,13 +482,22 @@ class CurlDownloadStrategy < AbstractFileDownloadStrategy
 
       if (filename_with_encoding = content_disposition.parameters["filename*"])
         encoding, encoded_filename = filename_with_encoding.split("''", 2)
-        filename = URI.decode_www_form_component(encoded_filename).encode(encoding) if encoding && encoded_filename
+        # If the `filename*` has incorrectly added double quotes, e.g.
+        #   content-disposition: attachment; filename="myapp-1.2.3.pkg"; filename*=UTF-8''"myapp-1.2.3.pkg"
+        # Then the encoded_filename will come back as the empty string, in which case we should fall back to the
+        # `filename` parameter.
+        if encoding.present? && encoded_filename.present?
+          filename = URI.decode_www_form_component(encoded_filename).encode(encoding)
+        end
       end
+
+      filename = content_disposition.filename if filename.blank?
+      next if filename.blank?
 
       # Servers may include '/' in their Content-Disposition filename header. Take only the basename of this, because:
       # - Unpacking code assumes this is a single file - not something living in a subdirectory.
       # - Directory traversal attacks are possible without limiting this to just the basename.
-      File.basename(filename || content_disposition.filename)
+      File.basename(filename)
     end
 
     filenames = lines.map(&parse_content_disposition).compact
@@ -580,6 +589,13 @@ class HomebrewCurlDownloadStrategy < CurlDownloadStrategy
 
     curl_download resolved_url, to: to, try_partial: @try_partial, timeout: timeout, use_homebrew_curl: true
   end
+
+  def curl_output(*args, **options)
+    raise HomebrewCurlDownloadStrategyError, url unless Formula["curl"].any_version_installed?
+
+    options[:use_homebrew_curl] = true
+    super(*args, **options)
+  end
 end
 
 # Strategy for downloading a file from an GitHub Packages URL.
@@ -589,12 +605,11 @@ class CurlGitHubPackagesDownloadStrategy < CurlDownloadStrategy
   attr_writer :resolved_basename
 
   def initialize(url, name, version, **meta)
-    meta ||= {}
     meta[:headers] ||= []
     # GitHub Packages authorization header.
     # HOMEBREW_GITHUB_PACKAGES_AUTH set in brew.sh
     meta[:headers] << "Authorization: #{HOMEBREW_GITHUB_PACKAGES_AUTH}"
-    super(url, name, version, meta)
+    super(url, name, version, **meta)
   end
 
   private
@@ -709,7 +724,7 @@ class SubversionDownloadStrategy < VCSDownloadStrategy
   # @api public
   sig { returns(Time) }
   def source_modified_time
-    time = if Version.create(Utils::Svn.version) >= Version.create("1.9")
+    time = if Version.create(T.must(Utils::Svn.version)) >= Version.create("1.9")
       out, = silent_command("svn", args: ["info", "--show-item", "last-changed-date"], chdir: cached_location)
       out
     else
@@ -804,6 +819,10 @@ end
 # @api public
 class GitDownloadStrategy < VCSDownloadStrategy
   def initialize(url, name, version, **meta)
+    # Needs to be before the call to `super`, as the VCSDownloadStrategy's
+    # constructor calls `cache_tag` and sets the cache path.
+    @only_path = meta[:only_path]
+
     super
     @ref_type ||= :branch
     @ref ||= "master"
@@ -818,8 +837,8 @@ class GitDownloadStrategy < VCSDownloadStrategy
   end
 
   # @see VCSDownloadStrategy#last_commit
-  sig { returns(String) }
   # @api public
+  sig { returns(String) }
   def last_commit
     out, = silent_command("git", args: ["--git-dir", git_dir, "rev-parse", "--short=7", "HEAD"])
     out.chomp
@@ -829,7 +848,11 @@ class GitDownloadStrategy < VCSDownloadStrategy
 
   sig { returns(String) }
   def cache_tag
-    "git"
+    if partial_clone_sparse_checkout?
+      "git-sparse"
+    else
+      "git"
+    end
   end
 
   sig { returns(Integer) }
@@ -873,6 +896,12 @@ class GitDownloadStrategy < VCSDownloadStrategy
     (cached_location/".gitmodules").exist?
   end
 
+  def partial_clone_sparse_checkout?
+    return false if @only_path.blank?
+
+    Utils::Git.supports_partial_clone_sparse_checkout?
+  end
+
   sig { returns(T::Array[String]) }
   def clone_args
     args = %w[clone]
@@ -882,8 +911,10 @@ class GitDownloadStrategy < VCSDownloadStrategy
       args << "--branch" << @ref
     end
 
+    args << "--no-checkout" << "--filter=blob:none" if partial_clone_sparse_checkout?
+
     args << "-c" << "advice.detachedHead=false" # silences detached head warning
-    args << @url << cached_location
+    args << @url << cached_location.to_s
   end
 
   sig { returns(String) }
@@ -915,6 +946,13 @@ class GitDownloadStrategy < VCSDownloadStrategy
     command! "git",
              args:  ["config", "advice.detachedHead", "false"],
              chdir: cached_location
+
+    return unless partial_clone_sparse_checkout?
+
+    command! "git",
+             args:  ["config", "origin.partialclonefilter", "blob:none"],
+             chdir: cached_location
+    configure_sparse_checkout
   end
 
   sig { params(timeout: T.nilable(Time)).void }
@@ -943,6 +981,9 @@ class GitDownloadStrategy < VCSDownloadStrategy
              args:    ["config", "homebrew.cacheversion", cache_version],
              chdir:   cached_location,
              timeout: timeout&.remaining
+
+    configure_sparse_checkout if partial_clone_sparse_checkout?
+
     checkout(timeout: timeout)
     update_submodules(timeout: timeout) if submodules?
   end
@@ -1013,6 +1054,15 @@ class GitDownloadStrategy < VCSDownloadStrategy
       dot_git.atomic_write("gitdir: #{relative_git_dir}\n")
     end
   end
+
+  def configure_sparse_checkout
+    command! "git",
+             args:  ["config", "core.sparseCheckout", "true"],
+             chdir: cached_location
+
+    (git_dir/"info").mkpath
+    (git_dir/"info"/"sparse-checkout").atomic_write("#{@only_path}\n")
+  end
 end
 
 # Strategy for downloading a Git repository from GitHub.
@@ -1022,49 +1072,20 @@ class GitHubGitDownloadStrategy < GitDownloadStrategy
   def initialize(url, name, version, **meta)
     super
 
-    return unless %r{^https?://github\.com/(?<user>[^/]+)/(?<repo>[^/]+)\.git$} =~ @url
+    match_data = %r{^https?://github\.com/(?<user>[^/]+)/(?<repo>[^/]+)\.git$}.match(@url)
+    return unless match_data
 
-    @user = user
-    @repo = repo
-  end
-
-  def github_last_commit
-    # TODO: move to Utils::GitHub
-    return if Homebrew::EnvConfig.no_github_api?
-
-    output, _, status = curl_output(
-      "--silent", "--head", "--location",
-      "-H", "Accept: application/vnd.github.sha",
-      "https://api.github.com/repos/#{@user}/#{@repo}/commits/#{@ref}"
-    )
-
-    return unless status.success?
-
-    commit = output[/^ETag: "(\h+)"/, 1]
-    version.update_commit(commit) if commit
-    commit
-  end
-
-  def multiple_short_commits_exist?(commit)
-    # TODO: move to Utils::GitHub
-    return if Homebrew::EnvConfig.no_github_api?
-
-    output, _, status = curl_output(
-      "--silent", "--head", "--location",
-      "-H", "Accept: application/vnd.github.sha",
-      "https://api.github.com/repos/#{@user}/#{@repo}/commits/#{commit}"
-    )
-
-    !(status.success? && output && output[/^Status: (200)/, 1] == "200")
+    @user = match_data[:user]
+    @repo = match_data[:repo]
   end
 
   def commit_outdated?(commit)
-    @last_commit ||= github_last_commit
+    @last_commit ||= GitHub.last_commit(@user, @repo, @ref, version)
     if @last_commit
       return true unless commit
       return true unless @last_commit.start_with?(commit)
 
-      if multiple_short_commits_exist?(commit)
+      if GitHub.multiple_short_commits_exist?(@user, @repo, commit)
         true
       else
         version.update_commit(commit)
@@ -1084,7 +1105,7 @@ class GitHubGitDownloadStrategy < GitDownloadStrategy
     end
   end
 
-  sig { returns(String) }
+  sig { returns(T.nilable(String)) }
   def default_branch
     return @default_branch if defined?(@default_branch)
 

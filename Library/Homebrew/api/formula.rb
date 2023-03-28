@@ -1,5 +1,7 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
+
+require "extend/cachable"
 
 module Homebrew
   module API
@@ -8,37 +10,63 @@ module Homebrew
     # @api private
     module Formula
       class << self
+        include Cachable
         extend T::Sig
 
-        sig { returns(String) }
-        def formula_api_path
-          "formula"
-        end
-        alias generic_formula_api_path formula_api_path
-
-        sig { returns(String) }
-        def cached_formula_json_file
-          HOMEBREW_CACHE_API/"#{formula_api_path}.json"
-        end
+        private :cache
 
         sig { params(name: String).returns(Hash) }
         def fetch(name)
-          Homebrew::API.fetch "#{formula_api_path}/#{name}.json"
+          Homebrew::API.fetch "formula/#{name}.json"
         end
 
-        sig { returns(Array) }
-        def all_formulae
-          @all_formulae ||= begin
-            curl_args = %w[--compressed --silent https://formulae.brew.sh/api/formula.json]
-            if cached_formula_json_file.exist? && !cached_formula_json_file.empty?
-              curl_args.prepend("--time-cond", cached_formula_json_file)
+        sig { returns(T::Boolean) }
+        def download_and_cache_data!
+          json_formulae, updated = Homebrew::API.fetch_json_api_file "formula.jws.json",
+                                                                     target: HOMEBREW_CACHE_API/"formula.jws.json"
+
+          cache["aliases"] = {}
+          cache["formulae"] = json_formulae.to_h do |json_formula|
+            json_formula["aliases"].each do |alias_name|
+              cache["aliases"][alias_name] = json_formula["name"]
             end
-            curl_download(*curl_args, to: HOMEBREW_CACHE_API/"#{formula_api_path}.json", max_time: 5)
 
-            json_formulae = JSON.parse(cached_formula_json_file.read)
+            [json_formula["name"], json_formula.except("name")]
+          end
 
-            json_formulae.to_h do |json_formula|
-              [json_formula["name"], json_formula.except("name")]
+          updated
+        end
+        private :download_and_cache_data!
+
+        sig { returns(Hash) }
+        def all_formulae
+          unless cache.key?("formulae")
+            json_updated = download_and_cache_data!
+            write_names_and_aliases(regenerate: json_updated)
+          end
+
+          cache["formulae"]
+        end
+
+        sig { returns(Hash) }
+        def all_aliases
+          unless cache.key?("aliases")
+            json_updated = download_and_cache_data!
+            write_names_and_aliases(regenerate: json_updated)
+          end
+
+          cache["aliases"]
+        end
+
+        sig { params(regenerate: T::Boolean).void }
+        def write_names_and_aliases(regenerate: false)
+          download_and_cache_data! unless cache.key?("formulae")
+
+          return unless Homebrew::API.write_names_file(all_formulae.keys, "formula", regenerate: regenerate)
+
+          (HOMEBREW_CACHE_API/"formula_aliases.txt").open("w") do |file|
+            all_aliases.each do |alias_name, real_name|
+              file.puts "#{alias_name}|#{real_name}"
             end
           end
         end

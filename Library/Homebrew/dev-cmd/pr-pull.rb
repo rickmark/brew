@@ -1,4 +1,4 @@
-# typed: false
+# typed: true
 # frozen_string_literal: true
 
 require "download_strategy"
@@ -10,10 +10,8 @@ require "formula"
 module Homebrew
   extend T::Sig
 
-  module_function
-
   sig { returns(CLI::Parser) }
-  def pr_pull_args
+  def self.pr_pull_args
     Homebrew::CLI::Parser.new do
       description <<~EOS
         Download and publish bottles, and apply the bottle commit from a
@@ -24,6 +22,8 @@ module Homebrew
              description: "Download the bottles but don't upload them."
       switch "--no-commit",
              description: "Do not generate a new commit before uploading."
+      switch "--no-cherry-pick",
+             description: "Do not cherry-pick commits from the pull request branch."
       switch "-n", "--dry-run",
              description: "Print what would be done rather than doing it."
       switch "--clean",
@@ -56,10 +56,10 @@ module Homebrew
       flag   "--root-url-using=",
              description: "Use the specified download strategy class for downloading the bottle's URL instead of " \
                           "Homebrew's default."
-      comma_array "--workflows=",
+      comma_array "--workflows",
                   description: "Retrieve artifacts from the specified workflow (default: `tests.yml`). " \
                                "Can be a comma-separated list to include multiple workflows."
-      comma_array "--ignore-missing-artifacts=",
+      comma_array "--ignore-missing-artifacts",
                   description: "Comma-separated list of workflows which can be ignored if they have not been run."
 
       conflicts "--no-autosquash", "--message"
@@ -69,7 +69,7 @@ module Homebrew
   end
 
   # Separates a commit message into subject, body, and trailers.
-  def separate_commit_message(message)
+  def self.separate_commit_message(message)
     subject = message.lines.first.strip
 
     # Skip the subject and separate lines that look like trailers (e.g. "Co-authored-by")
@@ -82,19 +82,19 @@ module Homebrew
     [subject, body, trailers]
   end
 
-  def signoff!(path, pr: nil, dry_run: false)
+  def self.signoff!(path, pull_request: nil, dry_run: false)
     subject, body, trailers = separate_commit_message(path.git_commit_message)
 
-    if pr
+    if pull_request
       # This is a tap pull request and approving reviewers should also sign-off.
       tap = Tap.from_path(path)
-      review_trailers = GitHub.approved_reviews(tap.user, tap.full_name.split("/").last, pr).map do |r|
+      review_trailers = GitHub.approved_reviews(tap.user, tap.full_name.split("/").last, pull_request).map do |r|
         "Signed-off-by: #{r["name"]} <#{r["email"]}>"
       end
       trailers = trailers.lines.concat(review_trailers).map(&:strip).uniq.join("\n")
 
       # Append the close message as well, unless the commit body already includes it.
-      close_message = "Closes ##{pr}."
+      close_message = "Closes ##{pull_request}."
       body += "\n\n#{close_message}" unless body.include? close_message
     end
 
@@ -108,7 +108,7 @@ module Homebrew
     end
   end
 
-  def get_package(tap, subject_name, subject_path, content)
+  def self.get_package(tap, subject_name, subject_path, content)
     if subject_path.dirname == tap.cask_dir
       cask = begin
         Cask::CaskLoader.load(content.dup)
@@ -125,7 +125,7 @@ module Homebrew
     end
   end
 
-  def determine_bump_subject(old_contents, new_contents, subject_path, reason: nil)
+  def self.determine_bump_subject(old_contents, new_contents, subject_path, reason: nil)
     subject_path = Pathname(subject_path)
     tap          = Tap.from_path(subject_path)
     subject_name = subject_path.basename.to_s.chomp(".rb")
@@ -153,7 +153,7 @@ module Homebrew
 
   # Cherry picks a single commit that modifies a single file.
   # Potentially rewords this commit using {determine_bump_subject}.
-  def reword_package_commit(commit, file, reason: "", verbose: false, resolve: false, path: ".")
+  def self.reword_package_commit(commit, file, reason: "", verbose: false, resolve: false, path: ".")
     package_file = Pathname.new(path) / file
     package_name = package_file.basename.to_s.chomp(".rb")
 
@@ -178,7 +178,7 @@ module Homebrew
   # Cherry picks multiple commits that each modify a single file.
   # Words the commit according to {determine_bump_subject} with the body
   # corresponding to all the original commit messages combined.
-  def squash_package_commits(commits, file, reason: "", verbose: false, resolve: false, path: ".")
+  def self.squash_package_commits(commits, file, reason: "", verbose: false, resolve: false, path: ".")
     odebug "Squashing #{file}: #{commits.join " "}"
 
     # Format commit messages into something similar to `git fmt-merge-message`.
@@ -223,7 +223,7 @@ module Homebrew
     ohai bump_subject
   end
 
-  def autosquash!(original_commit, tap:, reason: "", verbose: false, resolve: false)
+  def self.autosquash!(original_commit, tap:, reason: "", verbose: false, resolve: false)
     original_head = tap.path.git_head
 
     commits = Utils.safe_popen_read("git", "-C", tap.path, "rev-list",
@@ -257,7 +257,7 @@ module Homebrew
 
     # Iterate over every commit in the pull request series, but if we have to squash
     # multiple commits into one, ensure that we skip over commits we've already squashed.
-    processed_commits = []
+    processed_commits = T.let([], T::Array[String])
     commits.each do |commit|
       next if processed_commits.include? commit
 
@@ -288,26 +288,26 @@ module Homebrew
     raise
   end
 
-  def cherry_pick_pr!(user, repo, pr, args:, path: ".")
+  def self.cherry_pick_pr!(user, repo, pull_request, args:, path: ".")
     if args.dry_run?
       puts <<~EOS
-        git fetch --force origin +refs/pull/#{pr}/head
+        git fetch --force origin +refs/pull/#{pull_request}/head
         git merge-base HEAD FETCH_HEAD
         git cherry-pick --ff --allow-empty $merge_base..FETCH_HEAD
       EOS
       return
     end
 
-    commits = GitHub.pull_request_commits(user, repo, pr)
+    commits = GitHub.pull_request_commits(user, repo, pull_request)
     safe_system "git", "-C", path, "fetch", "--quiet", "--force", "origin", commits.last
-    ohai "Using #{commits.count} commit#{"s" unless commits.count == 1} from ##{pr}"
+    ohai "Using #{commits.count} commit#{"s" unless commits.count == 1} from ##{pull_request}"
     Utils::Git.cherry_pick!(path, "--ff", "--allow-empty", *commits, verbose: args.verbose?, resolve: args.resolve?)
   end
 
-  def formulae_need_bottles?(tap, original_commit, user, repo, pr, args:)
+  def self.formulae_need_bottles?(tap, original_commit, user, repo, pull_request, args:)
     return if args.dry_run?
 
-    labels = GitHub.pull_request_labels(user, repo, pr)
+    labels = GitHub.pull_request_labels(user, repo, pull_request)
 
     return false if labels.include?("CI-syntax-only") || labels.include?("CI-no-bottles")
 
@@ -316,7 +316,7 @@ module Homebrew
     end
   end
 
-  def changed_packages(tap, original_commit)
+  def self.changed_packages(tap, original_commit)
     formulae = Utils.popen_read("git", "-C", tap.path, "diff-tree",
                                 "-r", "--name-only", "--diff-filter=AM",
                                 original_commit, "HEAD", "--", tap.formula_dir)
@@ -352,7 +352,7 @@ module Homebrew
     formulae + casks
   end
 
-  def download_artifact(url, dir, pr)
+  def self.download_artifact(url, dir, pull_request)
     odie "Credentials must be set to access the Artifacts API" if GitHub::API.credentials_type == :none
 
     token = GitHub::API.credentials
@@ -362,34 +362,44 @@ module Homebrew
     # preferred over system `curl` and `tar` as this leverages the Homebrew
     # cache to avoid repeated downloads of (possibly large) bottles.
     FileUtils.chdir dir do
-      downloader = GitHubArtifactDownloadStrategy.new(url, "artifact", pr, curl_args: curl_args, secrets: [token])
+      downloader = GitHubArtifactDownloadStrategy.new(
+        url,
+        "artifact",
+        pull_request,
+        curl_args: curl_args,
+        secrets:   [token],
+      )
       downloader.fetch
       downloader.stage
     end
   end
 
-  def pr_check_conflicts(user, repo, pr)
-    long_build_pr_files = GitHub.search_issues(
-      "org:#{user}", repo: repo, state: "open", label: "\"no long build conflict\""
+  def self.pr_check_conflicts(repo, pull_request)
+    long_build_pr_files = GitHub.issues(
+      repo: repo, state: "open", labels: "no long build conflict",
     ).each_with_object({}) do |long_build_pr, hash|
-      number = long_build_pr["number"]
-      next if number == pr.to_i
+      next unless long_build_pr.key?("pull_request")
 
-      GitHub.get_pull_request_changed_files("#{user}/#{repo}", number).each do |file|
+      number = long_build_pr["number"]
+      next if number == pull_request.to_i
+
+      GitHub.get_pull_request_changed_files(repo, number).each do |file|
         key = file["filename"]
         hash[key] ||= []
         hash[key] << number
       end
     end
 
-    this_pr_files = GitHub.get_pull_request_changed_files("#{user}/#{repo}", pr)
+    return if long_build_pr_files.blank?
+
+    this_pr_files = GitHub.get_pull_request_changed_files(repo, pull_request)
 
     conflicts = this_pr_files.each_with_object({}) do |file, hash|
       filename = file["filename"]
       next unless long_build_pr_files.key?(filename)
 
       long_build_pr_files[filename].each do |pr_number|
-        key = "#{user}/#{repo}/pull/#{pr_number}"
+        key = "#{repo}/pull/#{pr_number}"
         hash[key] ||= []
         hash[key] << filename
       end
@@ -411,7 +421,7 @@ module Homebrew
     EOS
   end
 
-  def pr_pull
+  def self.pr_pull
     args = pr_pull_args.parse
 
     # Needed when extracting the CI artifact.
@@ -440,20 +450,26 @@ module Homebrew
         opoo "Current branch is #{tap.path.git_branch}: do you need to pull inside #{tap.path.git_origin_branch}?"
       end
 
-      pr_check_conflicts(user, repo, pr)
+      pr_check_conflicts("#{user}/#{repo}", pr)
 
       ohai "Fetching #{tap} pull request ##{pr}"
       Dir.mktmpdir pr do |dir|
         cd dir do
-          original_commit = ENV["GITHUB_SHA"].presence || tap.path.git_head
+          current_branch_head = ENV["GITHUB_SHA"] || tap.git_head
+          original_commit = if args.no_cherry_pick?
+            # TODO: Handle the case where `merge-base` returns multiple commits.
+            Utils.safe_popen_read("git", "-C", tap.path, "merge-base", "origin/HEAD", current_branch_head).strip
+          else
+            current_branch_head
+          end
 
           unless args.no_commit?
-            cherry_pick_pr!(user, repo, pr, path: tap.path, args: args)
+            cherry_pick_pr!(user, repo, pr, path: tap.path, args: args) unless args.no_cherry_pick?
             if !args.no_autosquash? && !args.dry_run?
               autosquash!(original_commit, tap: tap,
                           verbose: args.verbose?, resolve: args.resolve?, reason: args.message)
             end
-            signoff!(tap.path, pr: pr, dry_run: args.dry_run?) unless args.clean?
+            signoff!(tap.path, pull_request: pr, dry_run: args.dry_run?) unless args.clean?
           end
 
           unless formulae_need_bottles?(tap, original_commit, user, repo, pr, args: args)

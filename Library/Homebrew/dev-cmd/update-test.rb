@@ -2,7 +2,6 @@
 # frozen_string_literal: true
 
 require "cli/parser"
-
 module Homebrew
   extend T::Sig
 
@@ -60,15 +59,7 @@ module Homebrew
       elsif (date = args.before)
         Utils.popen_read("git", "rev-list", "-n1", "--before=#{date}", "origin/master").chomp
       elsif args.to_tag?
-        tags = Utils.popen_read("git", "tag", "--list", "--sort=-version:refname")
-        if tags.blank?
-          tags = if (HOMEBREW_REPOSITORY/".git/shallow").exist?
-            safe_system "git", "fetch", "--tags", "--depth=1"
-            Utils.popen_read("git", "tag", "--list", "--sort=-version:refname")
-          elsif OS.linux?
-            Utils.popen_read("git tag --list | sort -rV")
-          end
-        end
+        tags = git_tags
         current_tag, previous_tag, = tags.lines
         current_tag = current_tag.to_s.chomp
         odie "Could not find current tag in:\n#{tags}" if current_tag.empty?
@@ -147,4 +138,17 @@ module Homebrew
   ensure
     FileUtils.rm_rf "update-test" unless args.keep_tmp?
   end
+
+  def git_tags
+    tags = Utils.popen_read("git", "tag", "--list", "--sort=-version:refname")
+    if tags.blank?
+      tags = if (HOMEBREW_REPOSITORY/".git/shallow").exist?
+        safe_system "git", "fetch", "--tags", "--depth=1"
+        Utils.popen_read("git", "tag", "--list", "--sort=-version:refname")
+      end
+    end
+    tags
+  end
 end
+
+require "extend/os/dev-cmd/update-test"

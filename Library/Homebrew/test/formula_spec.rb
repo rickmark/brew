@@ -149,11 +149,19 @@ describe Formula do
       end
     end
 
-    it "returns true by default" do
-      FileUtils.touch f.path
-      FileUtils.touch f2.path
+    before do
+      # don't try to load/fetch gcc/glibc
+      allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+      allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
+
       allow(Formulary).to receive(:load_formula_from_path).with(f2.name, f2.path).and_return(f2)
       allow(Formulary).to receive(:factory).with(f2.name).and_return(f2)
+      allow(f.tap).to receive(:versioned_formula_files).and_return([f2.path])
+    end
+
+    it "returns array with versioned formulae" do
+      FileUtils.touch f.path
+      FileUtils.touch f2.path
       expect(f.versioned_formulae).to eq [f2]
     end
 
@@ -237,7 +245,7 @@ describe Formula do
   specify "#prefix" do
     f = Testball.new
     expect(f.prefix).to eq(HOMEBREW_CELLAR/f.name/"0.1")
-    expect(f.prefix).to be_kind_of(Pathname)
+    expect(f.prefix).to be_a(Pathname)
   end
 
   example "revised prefix" do
@@ -290,17 +298,19 @@ describe Formula do
     let(:f) { Testball.new }
 
     it "returns false if the #latest_installed_prefix is not a directory" do
-      allow(f).to receive(:latest_installed_prefix).and_return(double(directory?: false))
+      allow(f).to receive(:latest_installed_prefix).and_return(instance_double(Pathname, directory?: false))
       expect(f).not_to be_latest_version_installed
     end
 
     it "returns false if the #latest_installed_prefix does not have children" do
-      allow(f).to receive(:latest_installed_prefix).and_return(double(directory?: true, children: []))
+      allow(f).to receive(:latest_installed_prefix)
+        .and_return(instance_double(Pathname, directory?: true, children: []))
       expect(f).not_to be_latest_version_installed
     end
 
     it "returns true if the #latest_installed_prefix has children" do
-      allow(f).to receive(:latest_installed_prefix).and_return(double(directory?: true, children: [double]))
+      allow(f).to receive(:latest_installed_prefix)
+        .and_return(instance_double(Pathname, directory?: true, children: [double]))
       expect(f).to be_latest_version_installed
     end
   end
@@ -446,136 +456,6 @@ describe Formula do
     end
   end
 
-  shared_context "with formulae for dependency testing" do
-    let(:formula_with_deps) do
-      formula "zero" do
-        url "zero-1.0"
-      end
-    end
-
-    let(:formula_is_dep1) do
-      formula "one" do
-        url "one-1.1"
-      end
-    end
-
-    let(:formula_is_dep2) do
-      formula "two" do
-        url "two-1.1"
-      end
-    end
-
-    let(:formulae) do
-      [
-        formula_with_deps,
-        formula_is_dep1,
-        formula_is_dep2,
-      ]
-    end
-
-    before do
-      allow(formula_with_deps).to receive(:runtime_formula_dependencies).and_return([formula_is_dep1,
-                                                                                     formula_is_dep2])
-      allow(formula_is_dep1).to receive(:runtime_formula_dependencies).and_return([formula_is_dep2])
-    end
-  end
-
-  describe "::formulae_with_no_formula_dependents" do
-    include_context "with formulae for dependency testing"
-
-    it "filters out dependencies" do
-      expect(described_class.formulae_with_no_formula_dependents(formulae))
-          .to eq([formula_with_deps])
-    end
-  end
-
-  describe "::unused_formulae_with_no_formula_dependents" do
-    include_context "with formulae for dependency testing"
-
-    let(:tab_from_keg) { double }
-
-    before do
-      allow(Tab).to receive(:for_keg).and_return(tab_from_keg)
-    end
-
-    specify "installed on request" do
-      allow(tab_from_keg).to receive(:installed_on_request).and_return(true)
-      expect(described_class.unused_formulae_with_no_formula_dependents(formulae))
-          .to eq([])
-    end
-
-    specify "not installed on request" do
-      allow(tab_from_keg).to receive(:installed_on_request).and_return(false)
-      expect(described_class.unused_formulae_with_no_formula_dependents(formulae))
-          .to eq(formulae)
-    end
-  end
-
-  shared_context "with formulae and casks for dependency testing" do
-    include_context "with formulae for dependency testing"
-
-    require "cask/cask_loader"
-
-    let(:cask_one_dep) do
-      Cask::CaskLoader.load(+<<-RUBY)
-        cask "red" do
-          depends_on formula: "two"
-        end
-      RUBY
-    end
-
-    let(:cask_multiple_deps) do
-      Cask::CaskLoader.load(+<<-RUBY)
-        cask "blue" do
-          depends_on formula: "zero"
-        end
-      RUBY
-    end
-
-    let(:cask_no_deps1) do
-      Cask::CaskLoader.load(+<<-RUBY)
-        cask "green" do
-        end
-      RUBY
-    end
-
-    let(:cask_no_deps2) do
-      Cask::CaskLoader.load(+<<-RUBY)
-        cask "purple" do
-        end
-      RUBY
-    end
-
-    let(:casks_no_deps) { [cask_no_deps1, cask_no_deps2] }
-    let(:casks_one_dep) { [cask_no_deps1, cask_no_deps2, cask_one_dep] }
-    let(:casks_multiple_deps) { [cask_no_deps1, cask_no_deps2, cask_multiple_deps] }
-
-    before do
-      allow(described_class).to receive("[]").with("zero").and_return(formula_with_deps)
-      allow(described_class).to receive("[]").with("one").and_return(formula_is_dep1)
-      allow(described_class).to receive("[]").with("two").and_return(formula_is_dep2)
-    end
-  end
-
-  describe "::formulae_with_cask_dependents" do
-    include_context "with formulae and casks for dependency testing"
-
-    specify "no dependents" do
-      expect(described_class.formulae_with_cask_dependents(casks_no_deps))
-        .to eq([])
-    end
-
-    specify "one dependent" do
-      expect(described_class.formulae_with_cask_dependents(casks_one_dep))
-        .to eq([formula_is_dep2])
-    end
-
-    specify "multiple dependents" do
-      expect(described_class.formulae_with_cask_dependents(casks_multiple_deps))
-        .to eq(formulae)
-    end
-  end
-
   describe "::inreplace" do
     specify "raises build error on failure" do
       f = formula do
@@ -666,8 +546,8 @@ describe Formula do
       url "foo-1.0"
     end
 
-    expect(f.class.stable).to be_kind_of(SoftwareSpec)
-    expect(f.class.head).to be_kind_of(SoftwareSpec)
+    expect(f.class.stable).to be_a(SoftwareSpec)
+    expect(f.class.head).to be_a(SoftwareSpec)
   end
 
   specify "instance specs have different references" do
@@ -828,15 +708,15 @@ describe Formula do
     specify "service complicated" do
       f = formula do
         url "https://brew.sh/test-1.0.tbz"
-      end
 
-      f.class.service do
-        run [opt_bin/"beanstalkd"]
-        run_type :immediate
-        error_log_path var/"log/beanstalkd.error.log"
-        log_path var/"log/beanstalkd.log"
-        working_dir var
-        keep_alive true
+        service do
+          run [opt_bin/"beanstalkd"]
+          run_type :immediate
+          error_log_path var/"log/beanstalkd.error.log"
+          log_path var/"log/beanstalkd.log"
+          working_dir var
+          keep_alive true
+        end
       end
       expect(f.service).not_to be_nil
     end
@@ -859,13 +739,17 @@ describe Formula do
 
       expect(f.plist_name).to eq("homebrew.mxcl.formula_name")
       expect(f.service_name).to eq("homebrew.formula_name")
-      expect(f.plist_path).to eq(HOMEBREW_PREFIX/"opt/formula_name/homebrew.mxcl.formula_name.plist")
+      expect(f.launchd_service_path).to eq(HOMEBREW_PREFIX/"opt/formula_name/homebrew.mxcl.formula_name.plist")
       expect(f.systemd_service_path).to eq(HOMEBREW_PREFIX/"opt/formula_name/homebrew.formula_name.service")
       expect(f.systemd_timer_path).to eq(HOMEBREW_PREFIX/"opt/formula_name/homebrew.formula_name.timer")
     end
   end
 
   specify "dependencies" do
+    # don't try to load/fetch gcc/glibc
+    allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+    allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
+
     f1 = formula "f1" do
       url "f1-1.0"
     end
@@ -908,6 +792,10 @@ describe Formula do
     specify "runtime dependencies with optional deps from tap" do
       tap_loader = double
 
+      # don't try to load/fetch gcc/glibc
+      allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+      allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
+
       allow(tap_loader).to receive(:get_formula).and_raise(RuntimeError, "tried resolving tap formula")
       allow(Formulary).to receive(:loader_for).with("foo/bar/f1", from: nil).and_return(tap_loader)
       stub_formula_loader(formula("f2") { url("f2-1.0") }, "baz/qux/f2")
@@ -935,7 +823,7 @@ describe Formula do
       keg = Keg.for(formula.latest_installed_prefix)
       keg.link
 
-      linkage_checker = double("linkage checker", undeclared_deps: [dependency.name])
+      linkage_checker = instance_double(LinkageChecker, "linkage checker", undeclared_deps: [dependency.name])
       allow(LinkageChecker).to receive(:new).and_return(linkage_checker)
 
       expect(formula.runtime_dependencies.map(&:name)).to eq [dependency.name]
@@ -957,6 +845,10 @@ describe Formula do
   end
 
   specify "requirements" do
+    # don't try to load/fetch gcc/glibc
+    allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+    allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
+
     f1 = formula "f1" do
       url "f1-1"
 
@@ -980,7 +872,11 @@ describe Formula do
     end
 
     expect(Set.new(f2.recursive_requirements)).to eq(Set[])
-    expect(Set.new(f2.recursive_requirements {})).to eq(Set[xcode])
+    expect(
+      f2.recursive_requirements do
+        # do nothing
+      end.to_set,
+    ).to eq(Set[xcode])
 
     requirements = f2.recursive_requirements do |_dependent, requirement|
       Requirement.prune if requirement.is_a?(XcodeRequirement)
@@ -1034,7 +930,7 @@ describe Formula do
         end
       RUBY
     end
-    let(:expected_variations) {
+    let(:expected_variations) do
       <<~JSON
         {
           "arm64_big_sur": {
@@ -1073,7 +969,7 @@ describe Formula do
           }
         }
       JSON
-    }
+    end
 
     before do
       # Use a more limited symbols list to shorten the variations hash
@@ -1099,25 +995,6 @@ describe Formula do
       expect(h).to be_a(Hash)
       expect(JSON.pretty_generate(h["variations"])).to eq expected_variations.strip
     end
-  end
-
-  specify "#to_recursive_bottle_hash" do
-    f1 = formula "foo" do
-      url "foo-1.0"
-
-      bottle do
-        sha256 cellar: :any, Utils::Bottles.tag.to_sym => TEST_SHA256
-        sha256 cellar: :any, foo:                         TEST_SHA256
-      end
-    end
-
-    h = f1.to_recursive_bottle_hash
-
-    expect(h).to be_a(Hash)
-    expect(h["name"]).to eq "foo"
-    expect(h["bottles"].keys).to eq [Utils::Bottles.tag.to_s, "x86_64_foo"]
-    expect(h["bottles"][Utils::Bottles.tag.to_s].keys).to eq ["url"]
-    expect(h["dependencies"]).to eq []
   end
 
   describe "#eligible_kegs_for_cleanup" do
@@ -1317,6 +1194,7 @@ describe Formula do
 
     let(:tab) { Tab.empty }
     let(:alias_path) { "#{CoreTap.instance.alias_dir}/bar" }
+    let(:alias_name) { "bar" }
 
     before do
       allow(described_class).to receive(:installed).and_return([f])
@@ -1338,7 +1216,7 @@ describe Formula do
 
     specify "alias changes when not changed" do
       tab.source["path"] = alias_path
-      stub_formula_loader(f, alias_path)
+      stub_formula_loader(f, alias_name)
 
       CoreTap.instance.alias_dir.mkpath
       FileUtils.ln_sf f.path, alias_path
@@ -1353,7 +1231,7 @@ describe Formula do
 
     specify "alias changes when new alias target" do
       tab.source["path"] = alias_path
-      stub_formula_loader(new_formula, alias_path)
+      stub_formula_loader(new_formula, alias_name)
 
       CoreTap.instance.alias_dir.mkpath
       FileUtils.ln_sf new_formula.path, alias_path
@@ -1368,7 +1246,7 @@ describe Formula do
 
     specify "alias changes when old formulae installed" do
       tab.source["path"] = alias_path
-      stub_formula_loader(new_formula, alias_path)
+      stub_formula_loader(new_formula, alias_name)
 
       CoreTap.instance.alias_dir.mkpath
       FileUtils.ln_sf new_formula.path, alias_path
@@ -1409,6 +1287,7 @@ describe Formula do
     end
 
     let(:alias_path) { "#{f.tap.alias_dir}/bar" }
+    let(:alias_name) { "bar" }
 
     def setup_tab_for_prefix(prefix, options = {})
       prefix.mkpath
@@ -1447,14 +1326,14 @@ describe Formula do
     example "outdated follow alias and alias unchanged" do
       f.follow_installed_alias = true
       f.build = setup_tab_for_prefix(same_prefix, path: alias_path)
-      stub_formula_loader(f, alias_path)
+      stub_formula_loader(f, alias_name)
       expect(f.outdated_kegs).to be_empty
     end
 
     example "outdated follow alias and alias changed and new target not installed" do
       f.follow_installed_alias = true
       f.build = setup_tab_for_prefix(same_prefix, path: alias_path)
-      stub_formula_loader(new_formula, alias_path)
+      stub_formula_loader(new_formula, alias_name)
 
       CoreTap.instance.alias_dir.mkpath
       FileUtils.ln_sf new_formula.path, alias_path
@@ -1465,7 +1344,7 @@ describe Formula do
     example "outdated follow alias and alias changed and new target installed" do
       f.follow_installed_alias = true
       f.build = setup_tab_for_prefix(same_prefix, path: alias_path)
-      stub_formula_loader(new_formula, alias_path)
+      stub_formula_loader(new_formula, alias_name)
       setup_tab_for_prefix(new_formula.prefix)
       expect(f.outdated_kegs).to be_empty
     end
@@ -1473,7 +1352,7 @@ describe Formula do
     example "outdated no follow alias and alias unchanged" do
       f.follow_installed_alias = false
       f.build = setup_tab_for_prefix(same_prefix, path: alias_path)
-      stub_formula_loader(f, alias_path)
+      stub_formula_loader(f, alias_name)
       expect(f.outdated_kegs).to be_empty
     end
 
@@ -1606,7 +1485,7 @@ describe Formula do
         testball_repo.cd do
           FileUtils.touch "LICENSE"
 
-          system("git", "init")
+          system("git", "-c", "init.defaultBranch=master", "init")
           system("git", "add", "--all")
           system("git", "commit", "-m", "Initial commit")
         end
@@ -1949,51 +1828,27 @@ describe Formula do
     end
   end
 
-  describe "#ignore_missing_libraries" do
-    after do
-      Homebrew::SimulateSystem.clear
-    end
+  describe "#generate_completions_from_executable" do
+    let(:f) do
+      Class.new(Testball) do
+        def install
+          bin.mkpath
+          (bin/"foo").write <<-EOF
+            echo completion
+          EOF
 
-    it "adds library to allowed_missing_libraries on Linux", :needs_linux do
-      Homebrew::SimulateSystem.clear
-      f = formula do
-        url "foo-1.0"
+          FileUtils.chmod "+x", bin/"foo"
 
-        ignore_missing_libraries "bar.so"
-      end
-      expect(f.class.allowed_missing_libraries.to_a).to eq(["bar.so"])
-    end
-
-    it "adds library to allowed_missing_libraries on macOS when simulating Linux", :needs_macos do
-      Homebrew::SimulateSystem.os = :linux
-      f = formula do
-        url "foo-1.0"
-
-        ignore_missing_libraries "bar.so"
-      end
-      expect(f.class.allowed_missing_libraries.to_a).to eq(["bar.so"])
-    end
-
-    it "raises an error on macOS", :needs_macos do
-      Homebrew::SimulateSystem.clear
-      expect {
-        formula do
-          url "foo-1.0"
-
-          ignore_missing_libraries "bar.so"
+          generate_completions_from_executable(bin/"foo", "test")
         end
-      }.to raise_error("ignore_missing_libraries is available on Linux only")
+      end.new
     end
 
-    it "raises an error on Linux when simulating macOS", :needs_linux do
-      Homebrew::SimulateSystem.os = :macos
-      expect {
-        formula do
-          url "foo-1.0"
-
-          ignore_missing_libraries "bar.so"
-        end
-      }.to raise_error("ignore_missing_libraries is available on Linux only")
+    it "generates completion scripts" do
+      f.brew { f.install }
+      expect(f.bash_completion/"testball").to be_a_file
+      expect(f.zsh_completion/"_testball").to be_a_file
+      expect(f.fish_completion/"testball.fish").to be_a_file
     end
   end
 end

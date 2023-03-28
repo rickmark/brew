@@ -62,23 +62,38 @@ describe Formulary do
     end
 
     it "returns a Formula" do
-      expect(described_class.factory(formula_name)).to be_kind_of(Formula)
+      expect(described_class.factory(formula_name)).to be_a(Formula)
     end
 
     it "returns a Formula when given a fully qualified name" do
-      expect(described_class.factory("homebrew/core/#{formula_name}")).to be_kind_of(Formula)
+      expect(described_class.factory("homebrew/core/#{formula_name}")).to be_a(Formula)
     end
 
     it "raises an error if the Formula cannot be found" do
-      expect {
+      expect do
         described_class.factory("not_existed_formula")
-      }.to raise_error(FormulaUnavailableError)
+      end.to raise_error(FormulaUnavailableError)
     end
 
     it "raises an error if ref is nil" do
-      expect {
+      expect do
         described_class.factory(nil)
-      }.to raise_error(ArgumentError)
+      end.to raise_error(ArgumentError)
+    end
+
+    context "with sharded Formula directory" do
+      before { CoreTap.instance.clear_cache }
+
+      let(:formula_name) { "testball_sharded" }
+      let(:formula_path) { CoreTap.new.formula_dir/formula_name[0]/"#{formula_name}.rb" }
+
+      it "returns a Formula" do
+        expect(described_class.factory(formula_name)).to be_a(Formula)
+      end
+
+      it "returns a Formula when given a fully qualified name" do
+        expect(described_class.factory("homebrew/core/#{formula_name}")).to be_a(Formula)
+      end
     end
 
     context "when the Formula has the wrong class" do
@@ -91,26 +106,26 @@ describe Formulary do
       end
 
       it "raises an error" do
-        expect {
+        expect do
           described_class.factory(formula_name)
-        }.to raise_error(FormulaClassUnavailableError)
+        end.to raise_error(FormulaClassUnavailableError)
       end
     end
 
     it "returns a Formula when given a path" do
-      expect(described_class.factory(formula_path)).to be_kind_of(Formula)
+      expect(described_class.factory(formula_path)).to be_a(Formula)
     end
 
     it "returns a Formula when given a URL" do
       formula = described_class.factory("file://#{formula_path}")
-      expect(formula).to be_kind_of(Formula)
+      expect(formula).to be_a(Formula)
     end
 
     context "when given a bottle" do
       subject(:formula) { described_class.factory(bottle) }
 
       it "returns a Formula" do
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
       end
 
       it "calling #local_bottle_path on the returned Formula returns the bottle path" do
@@ -130,7 +145,7 @@ describe Formulary do
       end
 
       it "returns a Formula" do
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
       end
 
       it "calling #alias_path on the returned Formula returns the alias path" do
@@ -141,8 +156,10 @@ describe Formulary do
     context "with installed Formula" do
       before do
         allow(described_class).to receive(:loader_for).and_call_original
-        stub_formula_loader formula("gcc") { url "gcc-1.0" }
-        stub_formula_loader formula("gcc@5") { url "gcc-5.0" }
+
+        # don't try to load/fetch gcc/glibc
+        allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+        allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
       end
 
       let(:installed_formula) { described_class.factory(formula_path) }
@@ -153,7 +170,7 @@ describe Formulary do
         installer.install
 
         f = described_class.from_rack(installed_formula.rack)
-        expect(f).to be_kind_of(Formula)
+        expect(f).to be_a(Formula)
       end
 
       it "returns a Formula when given a Keg" do
@@ -162,43 +179,43 @@ describe Formulary do
 
         keg = Keg.new(installed_formula.prefix)
         f = described_class.from_keg(keg)
-        expect(f).to be_kind_of(Formula)
+        expect(f).to be_a(Formula)
       end
     end
 
     context "when loading from Tap" do
       let(:tap) { Tap.new("homebrew", "foo") }
       let(:another_tap) { Tap.new("homebrew", "bar") }
-      let(:formula_path) { tap.path/"#{formula_name}.rb" }
+      let(:formula_path) { tap.path/"Formula/#{formula_name}.rb" }
 
       it "returns a Formula when given a name" do
-        expect(described_class.factory(formula_name)).to be_kind_of(Formula)
+        expect(described_class.factory(formula_name)).to be_a(Formula)
       end
 
       it "returns a Formula from an Alias path" do
         alias_dir = tap.path/"Aliases"
         alias_dir.mkpath
         FileUtils.ln_s formula_path, alias_dir/"bar"
-        expect(described_class.factory("bar")).to be_kind_of(Formula)
+        expect(described_class.factory("bar")).to be_a(Formula)
       end
 
       it "raises an error when the Formula cannot be found" do
-        expect {
+        expect do
           described_class.factory("#{tap}/not_existed_formula")
-        }.to raise_error(TapFormulaUnavailableError)
+        end.to raise_error(TapFormulaUnavailableError)
       end
 
       it "returns a Formula when given a fully qualified name" do
-        expect(described_class.factory("#{tap}/#{formula_name}")).to be_kind_of(Formula)
+        expect(described_class.factory("#{tap}/#{formula_name}")).to be_a(Formula)
       end
 
       it "raises an error if a Formula is in multiple Taps" do
-        another_tap.path.mkpath
-        (another_tap.path/"#{formula_name}.rb").write formula_content
+        (another_tap.path/"Formula").mkpath
+        (another_tap.path/"Formula/#{formula_name}.rb").write formula_content
 
-        expect {
+        expect do
           described_class.factory(formula_name)
-        }.to raise_error(TapFormulaAmbiguityError)
+        end.to raise_error(TapFormulaAmbiguityError)
       end
     end
 
@@ -238,10 +255,28 @@ describe Formulary do
             },
             "build_dependencies"       => ["build_dep"],
             "dependencies"             => ["dep"],
+            "test_dependencies"        => ["test_dep"],
             "recommended_dependencies" => ["recommended_dep"],
             "optional_dependencies"    => ["optional_dep"],
             "uses_from_macos"          => ["uses_from_macos_dep"],
+            "requirements"             => [
+              {
+                "name"     => "xcode",
+                "cask"     => nil,
+                "download" => nil,
+                "version"  => "1.0",
+                "contexts" => ["build"],
+              },
+            ],
+            "conflicts_with"           => ["conflicting_formula"],
+            "conflicts_with_reasons"   => ["it does"],
+            "link_overwrite"           => ["bin/abc"],
             "caveats"                  => "example caveat string",
+            "service"                  => {
+              "run"         => ["$HOMEBREW_PREFIX/opt/formula_name/bin/beanstalkd", "test"],
+              "run_type"    => "immediate",
+              "working_dir" => "/$HOME",
+            },
           }.merge(extra_items),
         }
       end
@@ -270,6 +305,16 @@ describe Formulary do
         }
       end
 
+      let(:older_macos_variations_json) do
+        {
+          "variations" => {
+            Utils::Bottles.tag.to_s => {
+              "dependencies" => ["uses_from_macos_dep"],
+            },
+          },
+        }
+      end
+
       let(:linux_variations_json) do
         {
           "variations" => {
@@ -282,55 +327,78 @@ describe Formulary do
 
       before do
         allow(described_class).to receive(:loader_for).and_return(described_class::FormulaAPILoader.new(formula_name))
+
+        # don't try to load/fetch gcc/glibc
+        allow(DevelopmentTools).to receive(:needs_libc_formula?).and_return(false)
+        allow(DevelopmentTools).to receive(:needs_compiler_formula?).and_return(false)
       end
 
       it "returns a Formula when given a name" do
         allow(Homebrew::API::Formula).to receive(:all_formulae).and_return formula_json_contents
 
         formula = described_class.factory(formula_name)
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
+
         expect(formula.keg_only_reason.reason).to eq :provided_by_macos
         if OS.mac?
-          expect(formula.deps.count).to eq 4
-        elsif OS.linux?
           expect(formula.deps.count).to eq 5
+        else
+          expect(formula.deps.count).to eq 6
         end
         expect(formula.uses_from_macos_elements).to eq ["uses_from_macos_dep"]
+
+        expect(formula.requirements.count).to eq 1
+        req = formula.requirements.first
+        expect(req).to be_an_instance_of XcodeRequirement
+        expect(req.version).to eq "1.0"
+        expect(req.tags).to eq [:build]
+
+        expect(formula.conflicts.map(&:name)).to include "conflicting_formula"
+        expect(formula.conflicts.map(&:reason)).to include "it does"
+        expect(formula.class.link_overwrite_paths).to include "bin/abc"
+
         expect(formula.caveats).to eq "example caveat string"
-        expect {
+
+        expect(formula).to be_a_service
+        expect(formula.service.command).to eq(["#{HOMEBREW_PREFIX}/opt/formula_name/bin/beanstalkd", "test"])
+        expect(formula.service.run_type).to eq(:immediate)
+        expect(formula.service.working_dir).to eq(Dir.home)
+
+        expect do
           formula.install
-        }.to raise_error("Cannot build from source from abstract formula.")
+        end.to raise_error("Cannot build from source from abstract formula.")
       end
 
       it "returns a deprecated Formula when given a name" do
         allow(Homebrew::API::Formula).to receive(:all_formulae).and_return formula_json_contents(deprecate_json)
 
         formula = described_class.factory(formula_name)
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
         expect(formula.deprecated?).to be true
-        expect {
+        expect do
           formula.install
-        }.to raise_error("Cannot build from source from abstract formula.")
+        end.to raise_error("Cannot build from source from abstract formula.")
       end
 
       it "returns a disabled Formula when given a name" do
         allow(Homebrew::API::Formula).to receive(:all_formulae).and_return formula_json_contents(disable_json)
 
         formula = described_class.factory(formula_name)
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
         expect(formula.disabled?).to be true
-        expect {
+        expect do
           formula.install
-        }.to raise_error("Cannot build from source from abstract formula.")
+        end.to raise_error("Cannot build from source from abstract formula.")
       end
 
       it "returns a Formula with variations when given a name", :needs_macos do
         allow(Homebrew::API::Formula).to receive(:all_formulae).and_return formula_json_contents(variations_json)
 
         formula = described_class.factory(formula_name)
-        expect(formula).to be_kind_of(Formula)
-        expect(formula.deps.count).to eq 5
+        expect(formula).to be_a(Formula)
+        expect(formula.deps.count).to eq 6
         expect(formula.deps.map(&:name).include?("variations_dep")).to be true
+        expect(formula.deps.map(&:name).include?("uses_from_macos_dep")).to be false
       end
 
       it "returns a Formula without duplicated deps and uses_from_macos with variations on Linux", :needs_linux do
@@ -338,7 +406,17 @@ describe Formulary do
           .to receive(:all_formulae).and_return formula_json_contents(linux_variations_json)
 
         formula = described_class.factory(formula_name)
-        expect(formula).to be_kind_of(Formula)
+        expect(formula).to be_a(Formula)
+        expect(formula.deps.count).to eq 6
+        expect(formula.deps.map(&:name).include?("uses_from_macos_dep")).to be true
+      end
+
+      it "returns a Formula with the correct uses_from_macos dep on older macOS", :needs_macos do
+        allow(Homebrew::API::Formula)
+          .to receive(:all_formulae).and_return formula_json_contents(older_macos_variations_json)
+
+        formula = described_class.factory(formula_name)
+        expect(formula).to be_a(Formula)
         expect(formula.deps.count).to eq 5
         expect(formula.deps.map(&:name).include?("uses_from_macos_dep")).to be true
       end
@@ -346,7 +424,7 @@ describe Formulary do
   end
 
   specify "::from_contents" do
-    expect(described_class.from_contents(formula_name, formula_path, formula_content)).to be_kind_of(Formula)
+    expect(described_class.from_contents(formula_name, formula_path, formula_content)).to be_a(Formula)
   end
 
   describe "::to_rack" do
@@ -371,9 +449,9 @@ describe Formulary do
     end
 
     it "raises an error if the Formula is not available" do
-      expect {
+      expect do
         described_class.to_rack("a/b/#{formula_name}")
-      }.to raise_error(TapFormulaUnavailableError)
+      end.to raise_error(TapFormulaUnavailableError)
     end
   end
 
